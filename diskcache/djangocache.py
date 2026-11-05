@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover
     # For older versions of Django simply use 300 seconds.
     DEFAULT_TIMEOUT = 300
 
-from .core import ENOVAL, args_to_key, full_name
+from .core import ENOVAL, UNSAFE_PICKLE_ALLOW_ALL, args_to_key, full_name
 from .fanout import FanoutCache
 
 
@@ -27,7 +27,11 @@ class DjangoCache(BaseCache):
         super().__init__(params)
         shards = params.get('SHARDS', 8)
         timeout = params.get('DATABASE_TIMEOUT', 0.010)
-        options = params.get('OPTIONS', {})
+        options = dict(params.get('OPTIONS', {}))
+        # Django caches arbitrary objects (model instances, responses,
+        # querysets) so unpickling stays unrestricted unless the
+        # `allowed_classes` option is configured explicitly.
+        options.setdefault('allowed_classes', UNSAFE_PICKLE_ALLOW_ALL)
         self._cache = FanoutCache(directory, shards, timeout, **options)
 
     @property

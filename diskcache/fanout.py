@@ -17,7 +17,13 @@ class FanoutCache:
     """Cache that shards keys and values."""
 
     def __init__(
-        self, directory=None, shards=8, timeout=0.010, disk=Disk, **settings
+        self,
+        directory=None,
+        shards=8,
+        timeout=0.010,
+        disk=Disk,
+        allowed_classes=None,
+        **settings
     ):
         """Initialize cache instance.
 
@@ -25,6 +31,9 @@ class FanoutCache:
         :param int shards: number of shards to distribute writes
         :param float timeout: SQLite connection timeout
         :param disk: `Disk` instance for serialization
+        :param allowed_classes: (module, name) pairs of extra classes allowed
+            when unpickling, passed to every `Cache` (default None, only
+            plain data types); see `Disk`
         :param settings: any of `DEFAULT_SETTINGS`
 
         """
@@ -40,11 +49,13 @@ class FanoutCache:
         self._count = shards
         self._directory = directory
         self._disk = disk
+        self._allowed_classes = allowed_classes
         self._shards = tuple(
             Cache(
                 directory=op.join(directory, '%03d' % num),
                 timeout=timeout,
                 disk=disk,
+                allowed_classes=allowed_classes,
                 size_limit=size_limit,
                 **settings,
             )
@@ -527,7 +538,13 @@ class FanoutCache:
         self.close()
 
     def __getstate__(self):
-        return (self._directory, self._count, self.timeout, type(self.disk))
+        return (
+            self._directory,
+            self._count,
+            self.timeout,
+            type(self.disk),
+            self._allowed_classes,
+        )
 
     def __setstate__(self, state):
         self.__init__(*state)
@@ -577,7 +594,8 @@ class FanoutCache:
     def cache(self, name, timeout=60, disk=None, **settings):
         """Return Cache with given `name` in subdirectory.
 
-        If disk is none (default), uses the fanout cache disk.
+        If disk is none (default), uses the fanout cache disk. Unless given in
+        `settings`, `allowed_classes` is the fanout cache `allowed_classes`.
 
         >>> fanout_cache = FanoutCache()
         >>> cache = fanout_cache.cache('test')
@@ -604,6 +622,7 @@ class FanoutCache:
         except KeyError:
             parts = name.split('/')
             directory = op.join(self._directory, 'cache', *parts)
+            settings.setdefault('allowed_classes', self._allowed_classes)
             temp = Cache(
                 directory=directory,
                 timeout=timeout,
@@ -641,6 +660,7 @@ class FanoutCache:
             cache = Cache(
                 directory=directory,
                 disk=self._disk,
+                allowed_classes=self._allowed_classes,
                 eviction_policy='none',
             )
             deque = Deque.fromcache(cache, maxlen=maxlen)
@@ -677,6 +697,7 @@ class FanoutCache:
             cache = Cache(
                 directory=directory,
                 disk=self._disk,
+                allowed_classes=self._allowed_classes,
                 eviction_policy='none',
             )
             index = Index.fromcache(cache)

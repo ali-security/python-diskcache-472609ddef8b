@@ -99,21 +99,159 @@ EVICTION_POLICY = {
     },
 }
 
+# Default (module, name) pairs that may be loaded when unpickling keys and
+# values. Only plain data types are allowed so that tampered cache data cannot
+# run code when it is read (CVE-2025-69872).
+_SAFE_CLASSES = frozenset(
+    [
+        ('builtins', 'bool'),
+        ('builtins', 'bytearray'),
+        ('builtins', 'bytes'),
+        ('builtins', 'complex'),
+        ('builtins', 'dict'),
+        ('builtins', 'float'),
+        ('builtins', 'frozenset'),
+        ('builtins', 'int'),
+        ('builtins', 'list'),
+        ('builtins', 'object'),
+        ('builtins', 'range'),
+        ('builtins', 'set'),
+        ('builtins', 'slice'),
+        ('builtins', 'str'),
+        ('builtins', 'tuple'),
+        # Pickle protocols 0-2 refer to built-ins by their Python 2 names,
+        # which the unpickler maps back to the same objects as above.
+        ('__builtin__', 'bool'),
+        ('__builtin__', 'bytearray'),
+        ('__builtin__', 'bytes'),
+        ('__builtin__', 'complex'),
+        ('__builtin__', 'dict'),
+        ('__builtin__', 'float'),
+        ('__builtin__', 'frozenset'),
+        ('__builtin__', 'int'),
+        ('__builtin__', 'list'),
+        ('__builtin__', 'long'),
+        ('__builtin__', 'object'),
+        ('__builtin__', 'range'),
+        ('__builtin__', 'set'),
+        ('__builtin__', 'slice'),
+        ('__builtin__', 'str'),
+        ('__builtin__', 'tuple'),
+        ('__builtin__', 'unicode'),
+        ('__builtin__', 'xrange'),
+        ('_codecs', 'encode'),
+        ('copy_reg', '_reconstructor'),
+        ('copyreg', '_reconstructor'),
+        ('collections', 'OrderedDict'),
+        ('collections', 'defaultdict'),
+        ('collections', 'deque'),
+        ('datetime', 'date'),
+        ('datetime', 'datetime'),
+        ('datetime', 'time'),
+        ('datetime', 'timedelta'),
+        ('datetime', 'timezone'),
+        ('decimal', 'Decimal'),
+        ('fractions', 'Fraction'),
+        ('diskcache.core', 'Constant'),
+    ]
+)
+
+# Sentinel for `allowed_classes` that disables the unpickling restrictions.
+UNSAFE_PICKLE_ALLOW_ALL = 'UNSAFE_PICKLE_ALLOW_ALL'
+
+
+def _resolve_allowed_classes(allowed_classes):
+    """Return set of (module, name) pairs allowed when unpickling.
+
+    :param allowed_classes: extra (module, name) pairs, None for the defaults
+        or ``UNSAFE_PICKLE_ALLOW_ALL``
+    :return: frozenset of allowed pairs, or None when unrestricted
+
+    """
+    if allowed_classes is None:
+        return _SAFE_CLASSES
+    if isinstance(allowed_classes, str):
+        if allowed_classes == UNSAFE_PICKLE_ALLOW_ALL:
+            return None  # Unrestricted unpickling.
+        raise ValueError(
+            'allowed_classes must be (module, name) pairs or'
+            ' UNSAFE_PICKLE_ALLOW_ALL'
+        )
+    return _SAFE_CLASSES.union(
+        (module, name) for module, name in allowed_classes
+    )
+
+
+class SafeUnpickler(pickle.Unpickler):
+    """Unpickler that only loads allowed classes.
+
+    Any global (class, function, etc.) whose ``(module, name)`` pair is not in
+    `allowed_classes` is rejected with ``pickle.UnpicklingError``.
+
+    """
+
+    def __init__(self, file, allowed_classes):
+        """Initialize unpickler instance.
+
+        :param file: binary file-like object to read from
+        :param allowed_classes: set of allowed (module, name) pairs
+
+        """
+        super().__init__(file)
+        self._allowed_classes = allowed_classes
+
+    def find_class(self, module, name):
+        if (module, name) not in self._allowed_classes:
+            raise pickle.UnpicklingError(
+                'Disallowed class: %s.%s. To allow this class, pass'
+                ' allowed_classes={(%r, %r)} to the Disk or Cache'
+                ' constructor.' % (module, name, module, name)
+            )
+        return super().find_class(module, name)
+
 
 class Disk:
     """Cache key and value serialization for SQLite database and files."""
 
-    def __init__(self, directory, min_file_size=0, pickle_protocol=0):
+    def __init__(
+        self,
+        directory,
+        min_file_size=0,
+        pickle_protocol=0,
+        allowed_classes=None,
+    ):
         """Initialize disk instance.
+
+        Unpickling is restricted to plain data types (the built-in scalars and
+        containers, some `collections`, `datetime`, `decimal` and `fractions`
+        types). Other classes must be listed in `allowed_classes`.
 
         :param str directory: directory path
         :param int min_file_size: minimum size for file use
         :param int pickle_protocol: pickle protocol for serialization
+        :param allowed_classes: (module, name) pairs of extra classes allowed
+            when unpickling (default None, only plain data types); pass
+            ``UNSAFE_PICKLE_ALLOW_ALL`` to remove all restrictions, which is
+            unsafe when others can write to the cache directory
 
         """
         self._directory = directory
         self.min_file_size = min_file_size
         self.pickle_protocol = pickle_protocol
+        self._allowed_classes = _resolve_allowed_classes(allowed_classes)
+
+    def _safe_load(self, file):
+        """Unpickle object from `file` loading only allowed classes.
+
+        :param file: binary file-like object to read from
+        :return: unpickled Python object
+        :raises pickle.UnpicklingError: if a disallowed class is referenced
+
+        """
+        allowed_classes = getattr(self, '_allowed_classes', _SAFE_CLASSES)
+        if allowed_classes is None:
+            return pickle.load(file)
+        return SafeUnpickler(file, allowed_classes).load()
 
     def hash(self, key):
         """Compute portable hash for `key`.
@@ -174,7 +312,7 @@ class Disk:
         if raw:
             return bytes(key) if type(key) is sqlite3.Binary else key
         else:
-            return pickle.load(io.BytesIO(key))
+            return self._safe_load(io.BytesIO(key))
 
     def store(self, value, read, key=UNKNOWN):
         """Convert `value` to fields size, mode, filename, and value for Cache
@@ -279,9 +417,9 @@ class Disk:
         elif mode == MODE_PICKLE:
             if value is None:
                 with open(op.join(self._directory, filename), 'rb') as reader:
-                    return pickle.load(reader)
+                    return self._safe_load(reader)
             else:
-                return pickle.load(io.BytesIO(value))
+                return self._safe_load(io.BytesIO(value))
 
     def filename(self, key=UNKNOWN, value=UNKNOWN):
         """Return filename and full-path tuple for file storage.
@@ -417,12 +555,24 @@ def args_to_key(base, args, kwargs, typed, ignore):
 class Cache:
     """Disk and file backed cache."""
 
-    def __init__(self, directory=None, timeout=60, disk=Disk, **settings):
+    def __init__(
+        self,
+        directory=None,
+        timeout=60,
+        disk=Disk,
+        allowed_classes=None,
+        **settings
+    ):
         """Initialize cache instance.
 
         :param str directory: cache directory
         :param float timeout: SQLite connection timeout
         :param disk: Disk type or subclass for serialization
+        :param allowed_classes: (module, name) pairs of extra classes allowed
+            when unpickling, passed to the Disk (default None, only plain
+            data types); pass ``UNSAFE_PICKLE_ALLOW_ALL`` to remove all
+            restrictions, which is unsafe when others can write to the cache
+            directory
         :param settings: any of DEFAULT_SETTINGS
 
         """
@@ -471,6 +621,11 @@ class Cache:
         for key in METADATA:
             sets.pop(key, None)
 
+        # The unpickling allow-list is never read from or stored in the
+        # Settings table: the cache database itself is untrusted input.
+        sets.pop('disk_allowed_classes', None)
+        sets.pop('disk__allowed_classes', None)
+
         # Chance to set pragmas before any tables are created.
 
         for key, value in sorted(sets.items()):
@@ -492,6 +647,13 @@ class Cache:
         }
         self._disk = disk(directory, **kwargs)
 
+        # Set on the instance rather than passed to `disk` so that Disk
+        # subclasses with their own __init__ signature keep working.
+        if allowed_classes is not None:
+            self._disk._allowed_classes = _resolve_allowed_classes(
+                allowed_classes
+            )
+
         # Set cached attributes: updates settings and sets pragmas.
 
         for key, value in sets.items():
@@ -503,6 +665,9 @@ class Cache:
             query = 'INSERT OR IGNORE INTO Settings VALUES (?, ?)'
             sql(query, (key, value))
             self.reset(key)
+
+        # Set after the Settings table attributes so it cannot be overridden.
+        self._allowed_classes = allowed_classes
 
         ((self._page_size,),) = sql('PRAGMA page_size').fetchall()
 
@@ -2362,7 +2527,12 @@ class Cache:
         return self.reset('count')
 
     def __getstate__(self):
-        return (self.directory, self.timeout, type(self.disk))
+        return (
+            self.directory,
+            self.timeout,
+            type(self.disk),
+            self._allowed_classes,
+        )
 
     def __setstate__(self, state):
         self.__init__(*state)
