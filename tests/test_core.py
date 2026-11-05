@@ -747,9 +747,9 @@ def test_incr(cache):
     assert cache.incr('key', 2) == 8
     assert cache.get('key', expire_time=True, tag=True) == (8, None, None)
     assert cache.delete('key')
-    assert cache.set('key', 100, expire=0.100)
+    assert cache.set('key', 100, expire=1.0)
     assert cache.get('key') == 100
-    time.sleep(0.120)
+    time.sleep(1.2)
     assert cache.incr('key') == 1
 
 
@@ -759,9 +759,9 @@ def test_incr_insert_keyerror(cache):
 
 
 def test_incr_update_keyerror(cache):
-    assert cache.set('key', 100, expire=0.100)
+    assert cache.set('key', 100, expire=1.0)
     assert cache.get('key') == 100
-    time.sleep(0.120)
+    time.sleep(1.2)
     with pytest.raises(KeyError):
         cache.incr('key', default=None)
 
@@ -771,9 +771,9 @@ def test_decr(cache):
     assert cache.decr('key', 2) == 2
     assert cache.get('key', expire_time=True, tag=True) == (2, None, None)
     assert cache.delete('key')
-    assert cache.set('key', 100, expire=0.100)
+    assert cache.set('key', 100, expire=1.0)
     assert cache.get('key') == 100
-    time.sleep(0.120)
+    time.sleep(1.2)
     assert cache.decr('key') == -1
 
 

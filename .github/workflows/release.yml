@@ -1,14 +1,16 @@
 name: release
 
 on:
-  push:
-    tags:
-      - v*
+  workflow_dispatch: {}
+
+env:
+  PIP_INDEX_URL: https://:2023-08-31T06:11:58.822453Z@time-machines-pypi.sealsecurity.io/
 
 jobs:
 
   upload:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       id-token: write
 
@@ -26,5 +28,9 @@ jobs:
     - name: Create build
       run: python -m build
 
-    - name: Publish package distributions to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
+    - name: Upload distributions
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/*
+        if-no-files-found: error

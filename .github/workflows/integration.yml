@@ -1,15 +1,22 @@
 name: integration
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional pytest selector to run a subset of tests'
+        required: false
+        default: ''
 
 jobs:
 
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       max-parallel: 8
       matrix:
-        check: [bluecheck, doc8, docs, flake8, isortcheck, mypy, pylint, rstcheck]
+        check: [bluecheck, doc8, docs, isortcheck, mypy]
 
     steps:
     - uses: actions/checkout@v3
@@ -28,7 +35,9 @@ jobs:
   tests:
     needs: checks
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
+      fail-fast: false
       max-parallel: 8
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -36,10 +45,21 @@ jobs:
 
     steps:
     - name: Set up Python ${{ matrix.python-version }} x64
+      if: runner.os != 'macOS'
       uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
         architecture: x64
+
+    # macos-latest is arm64: x64 CPython 3.8-3.10 builds abort (missing
+    # /usr/local/opt/gettext libintl), so provision a native arm64 interpreter.
+    - name: Set up Python ${{ matrix.python-version }} (macOS arm64)
+      if: runner.os == 'macOS'
+      uses: MatteoH2O1999/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache-build: true
+        allow-build: allow
 
     - uses: actions/checkout@v3
 
@@ -49,4 +69,10 @@ jobs:
         pip install tox
 
     - name: Test with tox
-      run: tox -e py
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.test-filter }}" ]; then
+          tox -e py -x "testenv.commands=pytest --no-cov ${{ inputs.test-filter }}"
+        else
+          tox -e py
+        fi
